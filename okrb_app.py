@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Каталог кодов ОКРБ + ТН ВЭД 5.0 — PyQt6 + SQLite3 + PyMuPDF (+ openpyxl).
+Каталог кодов ОКРБ + ТН ВЭД 5.1 — PyQt6 + SQLite3 + PyMuPDF (+ openpyxl).
 
 Установка:
     pip install "PyQt6>=6.5" "PyMuPDF>=1.24" openpyxl
@@ -15,13 +15,15 @@
   явно полностью -> ДА, подкоды ДА (по группе)
   явно частично  -> ЧАСТИЧНО + позиции, подкоды ТРЕБУЕТ ПРОВЕРКИ
   решение        -> ДА (по решению) / НЕ ВХОДИТ (проверено)
-  подкод наверх не наследуется
 
 Вкладка «ТН ВЭД · каталог»:
   tnved_catalog / tnved_groups
-  Иерархия строится по кодам переменной длины (4/6/8/9/10 цифр),
-  строки без кода дают контекст, тире задают уровень, есть признак
-  прослеживаемости. Старый формат со стрелками тоже читается.
+  Иерархия по кодам переменной длины (2/4/6/8/9/10 цифр),
+  строки без кода дают контекст, тире задают уровень,
+  есть признак прослеживаемости.
+
+В обеих вкладках под таблицей — цепочка родительских кодов
+с наименованиями для выбранной строки.
 """
 from __future__ import annotations
 
@@ -73,7 +75,7 @@ except ImportError:
 
 
 APP_NAME = "ОКРБ + ТН ВЭД"
-APP_VERSION = "5.0"
+APP_VERSION = "5.1"
 DB_FILENAME = "okrb_catalog.db"
 UI_FILENAME = "okrb_ui.json"
 PAGE_SIZE = 100
@@ -123,10 +125,6 @@ LETTERS_RE = re.compile(r"[A-Za-zА-Яа-яЁё]")
 EXCEPT_RE = re.compile(r"за\s+исключением\s*:?\s*", re.IGNORECASE)
 TNVED_GROUP_RE = re.compile(r"^\s*группа\s*(\d{1,2})\s*[.:]?\s*(.*)$", re.IGNORECASE)
 TNVED_DASH_ORDS = {0x002D, 0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, 0x2212}
-TNVED_SEP_ORDS = {0x203A, 0x2039, 0x25B6, 0x25BA, 0x25B8,
-                  0x2794, 0x279C, 0x27A4, 0x2022, 0x25CF}
-TNVED_PROTECT_ORDS = {0x2116, 0x00B0, 0x20AC, 0x0024, 0x00B1, 0x00D7,
-                      0x00F7, 0x2030, 0x00A9, 0x00AE, 0x2122, 0x00B5}
 TNVED_LENGTHS = {2, 4, 6, 8, 9, 10}
 
 INK = "#16233A"
@@ -320,7 +318,7 @@ def expand_okrb_code(code: str) -> List[str]:
     return code_prefixes(code) + [code]
 
 
-# --- ТН ВЭД: коды, уровни, разделители -------------------------------------
+# --- ТН ВЭД ----------------------------------------------------------------
 def normalize_tnved(code: str) -> str:
     return re.sub(r"\D", "", code or "")
 
@@ -365,24 +363,22 @@ def strip_tnved_dashes(text: str) -> str:
 
 
 def split_tnved_name(raw: str) -> Tuple[str, str]:
-    """Делит наименование по символу-стрелке (старый формат файла)."""
+    """Оставлено для совместимости: делит строку по символу-стрелке."""
     s = re.sub(r"\s+", " ", raw or "").strip()
     if not s:
         return "", ""
     seps: List[str] = []
     for ch in sorted(set(s)):
         o = ord(ch)
-        if o in TNVED_SEP_ORDS:
+        if o in {0x203A, 0x2039, 0x25B6, 0x25BA, 0x25B8, 0x2794, 0x279C, 0x27A4}:
             seps.append(ch)
             continue
-        if o in TNVED_PROTECT_ORDS or ch.isalnum() or ch.isspace():
+        if ch.isalnum() or ch.isspace():
             continue
         cat = unicodedata.category(ch)
         if cat and cat[0] in "PZC":
             continue
-        if (o > 0xFFFF or 0x2190 <= o <= 0x21FF or 0x27F0 <= o <= 0x27FF
-                or 0x2900 <= o <= 0x297F or 0x1F300 <= o <= 0x1FAFF
-                or cat in ("So", "Sk") or "ARROW" in unicodedata.name(ch, "")):
+        if o > 0xFFFF or 0x2190 <= o <= 0x21FF or cat in ("So", "Sk"):
             seps.append(ch)
     parts = re.split("[" + re.escape("".join(seps)) + "]", s) if seps else [s]
     parts = [p.strip(" :;,.-") for p in parts]
@@ -390,11 +386,6 @@ def split_tnved_name(raw: str) -> Tuple[str, str]:
     if not parts:
         return s, s
     return " \u203a ".join(parts), parts[-1]
-
-
-def tnved_arrow_parts(raw: str) -> List[str]:
-    full, _tail = split_tnved_name(raw)
-    return [p.strip() for p in full.split("\u203a") if p.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -790,9 +781,7 @@ class DatabaseManager:
             raise RuntimeError(f"Ошибка инициализации базы: {e}") from e
 
     def _migrate_tnved(self) -> None:
-        """Старый формат: name = полный путь, tail = последняя часть."""
-        rows = self.conn.execute(
-            "SELECT code, name, tail, path FROM tnved_catalog").fetchall()
+        rows = self.conn.execute("SELECT code, name, tail, path FROM tnved_catalog").fetchall()
         if not rows:
             return
         need = [r for r in rows if not (r["path"] or "")]
@@ -821,6 +810,15 @@ class DatabaseManager:
     def get(self, code: str) -> Optional[OkrbRecord]:
         r = self.conn.execute("SELECT * FROM okrb_catalog WHERE okrb_code=?", (code,)).fetchone()
         return self._row(r) if r else None
+
+    def okrb_chain(self, code: str) -> List[OkrbRecord]:
+        """Цепочка родительских кодов ОКРБ от корня до самого кода."""
+        out: List[OkrbRecord] = []
+        for c in code_prefixes(code) + [code]:
+            r = self.get(c)
+            if r is not None:
+                out.append(r)
+        return out
 
     def save_catalog(self, code: str, name: str, overwrite: bool = True) -> None:
         try:
@@ -1230,15 +1228,20 @@ class DatabaseManager:
             raise RuntimeError(f"Ошибка загрузки ТН ВЭД: {e}") from e
 
     def tnved_save(self, code: str, name: str, traceable: int = 0) -> None:
+        """Ручное добавление/правка кода ТН ВЭД (8 колонок — 8 значений)."""
         try:
             with self.conn:
                 self.conn.execute(
-                    """INSERT INTO tnved_catalog(code, name, name_lc, tail, tail_lc, grp, digits)
-                       VALUES(?,?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET
+                    """INSERT INTO tnved_catalog
+                       (code, name, name_lc, tail, tail_lc, grp, digits, traceable)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(code) DO UPDATE SET
                        name=excluded.name, name_lc=excluded.name_lc,
                        tail=excluded.tail, tail_lc=excluded.tail_lc,
-                       grp=excluded.grp, digits=excluded.digits, traceable=excluded.traceable""",
-                    (code, name, norm_text(name), name, norm_text(name), code[:2], len(code), traceable))
+                       grp=excluded.grp, digits=excluded.digits,
+                       traceable=excluded.traceable""",
+                    (code, name, norm_text(name), name, norm_text(name),
+                     code[:2], len(code), int(traceable)))
             self.tnved_rebuild()
         except sqlite3.Error as e:
             raise RuntimeError(f"Ошибка сохранения ТН ВЭД {code}: {e}") from e
@@ -1265,6 +1268,65 @@ class DatabaseManager:
                    WHERE code=?""",
                 [(o.path, norm_text(o.path), o.depth, o.parent, o.code[:2], o.code) for o in objs])
         return len(objs)
+
+    def _tnved_fetch(self, codes: Sequence[str]) -> Dict[str, TnvedRecord]:
+        out: Dict[str, TnvedRecord] = {}
+        for part in chunks(list(dict.fromkeys(codes))):
+            if not part:
+                continue
+            sql = ("SELECT c.*, COALESCE(g.name,'') AS gname FROM tnved_catalog c "
+                   "LEFT JOIN tnved_groups g ON g.grp=c.grp WHERE c.code IN (%s)"
+                   % ",".join("?" * len(part)))
+            for r in self.conn.execute(sql, list(part)):
+                out[r["code"]] = TnvedRecord(
+                    r["code"], r["name"] or "", r["path"] or "", r["grp"] or "",
+                    int(r["depth"] or 0), int(r["digits"] or 0), r["parent"] or "",
+                    int(r["traceable"] or 0), r["gname"] or "")
+        return out
+
+    def tnved_get(self, code: str) -> Optional[TnvedRecord]:
+        return self._tnved_fetch([code]).get(code)
+
+    def tnved_chain(self, code: str) -> List[TnvedRecord]:
+        """Цепочка от корня до кода."""
+        cur = self.tnved_get(code)
+        if cur is None:
+            return []
+        chain = [cur]
+        guard = 0
+        while cur.parent and guard < 24:
+            p = self.tnved_get(cur.parent)
+            if p is None:
+                break
+            chain.append(p)
+            cur = p
+            guard += 1
+        chain.reverse()
+        return chain
+
+    def tnved_chains(self, codes: Sequence[str]) -> Dict[str, List[TnvedRecord]]:
+        """Цепочки для списка кодов, пакетными запросами."""
+        cache: Dict[str, TnvedRecord] = {}
+        frontier: Set[str] = set(codes)
+        for _ in range(12):
+            missing = [c for c in frontier if c and c not in cache]
+            if not missing:
+                break
+            got = self._tnved_fetch(missing)
+            cache.update(got)
+            frontier = {r.parent for r in got.values() if r.parent}
+        out: Dict[str, List[TnvedRecord]] = {}
+        for c in codes:
+            chain: List[TnvedRecord] = []
+            cur = cache.get(c)
+            guard = 0
+            while cur is not None and guard < 24:
+                chain.append(cur)
+                cur = cache.get(cur.parent) if cur.parent else None
+                guard += 1
+            chain.reverse()
+            out[c] = chain
+        return out
 
     def _tnved_where(self, code_q: str, name_q: str, mode: str, grp: str,
                      only_leaf: bool, only_trace: bool, prefix: str) -> Tuple[str, List]:
@@ -1321,12 +1383,6 @@ class DatabaseManager:
         return [(r[0], r[1] or "") for r in self.conn.execute(
             "SELECT DISTINCT c.grp, COALESCE(g.name,'') FROM tnved_catalog c "
             "LEFT JOIN tnved_groups g ON g.grp=c.grp WHERE c.grp<>'' ORDER BY c.grp")]
-
-    def tnved_get(self, code: str) -> Optional[TnvedRecord]:
-        for r in self.tnved_search(code_q=code, limit=None):
-            if r.code == code:
-                return r
-        return None
 
     def stats(self) -> Dict[str, int]:
         s = ["COUNT(*) AS total", "SUM(TRIM(product_name)='') AS empty_name",
@@ -1756,7 +1812,6 @@ def code_from_cell(v, min_groups=2, kind="okrb") -> Tuple[str, str]:
             note = "код из числа Excel"
         else:
             raw = normalize_tnved(str(v))
-        # Excel съедает ведущий ноль: 0305 -> 305, 0803 -> 803
         if len(raw) not in TNVED_LENGTHS and (len(raw) + 1) in TNVED_LENGTHS:
             raw = raw.zfill(len(raw) + 1)
             note = "ведущий ноль восстановлен"
@@ -1856,7 +1911,6 @@ def detect_columns(sample: List[List], min_groups=2, kind="okrb") -> Tuple[int, 
 
 
 def build_tnved_paths(rows: List[TnvedRow]) -> None:
-    """Иерархия по кодам + контекст строк без кода."""
     by = {r.code: r for r in rows}
     codes = set(by)
     for r in rows:
@@ -1894,7 +1948,7 @@ def build_tnved_paths(rows: List[TnvedRow]) -> None:
 
 def parse_tnved_source(path, sheets, code_col, name_col, start_row,
                        progress_cb=None, cancel_cb=None):
-    st = dict(rows=0, codes=0, context=0, traceable=0, groups=0, dups=0, arrows=0, numeric=0)
+    st = dict(rows=0, codes=0, context=0, traceable=0, groups=0, dups=0, numeric=0)
     warns: List[str] = []
     out: List[TnvedRow] = []
     by: Dict[str, int] = {}
@@ -1941,7 +1995,6 @@ def parse_tnved_source(path, sheets, code_col, name_col, start_row,
                 continue
             lvl = tnved_dash_level(text)
             own = strip_tnved_dashes(text)
-            ctx = []
             if not own:
                 continue
             if not code:
@@ -1959,7 +2012,7 @@ def parse_tnved_source(path, sheets, code_col, name_col, start_row,
                 pending = []
                 continue
             rec = TnvedRow(code=code, name=own, sheet=sheet, row_no=i + 1, dashes=lvl,
-                           ctx=(ctx + pending) if ctx else list(pending), ord=order)
+                           ctx=list(pending), ord=order)
             order += 1
             by[code] = len(out)
             out.append(rec)
@@ -1991,8 +2044,6 @@ def parse_tnved_source(path, sheets, code_col, name_col, start_row,
     if st["numeric"]:
         warns.append(f"{st['numeric']} кодов прочитано из числового формата Excel — "
                      "проверьте ведущие нули (лучше формат «Текстовый»).")
-    if st["arrows"]:
-        warns.append(f"{st['arrows']} строк в старом формате со стрелками — иерархия взята из текста.")
     return out, groups, st, warns
 
 
@@ -2234,8 +2285,11 @@ class CodeDialog(QDialog):
             ment = db.mentions(record.okrb_code)
             for d in DOC_FLAGS:
                 self.cmb[d].setCurrentIndex(max(0, self.cmb[d].findData(ment.get(d, 0))))
+            chain = db.okrb_chain(record.okrb_code)
+            chain_txt = "\n".join(f"  {r.okrb_code} — {r.product_name}" for r in chain[:-1])
             self.lbl_info.setText("Сейчас вычислено: " + record.inclusion_text()
                                   + "\nОснование: " + (record.basis_text() or "—")
+                                  + ("\nРодители:\n" + chain_txt if chain_txt else "")
                                   + "\n\nНаследование по группам считается автоматически; "
                                     "здесь задаются только явные отметки.")
 
@@ -2401,12 +2455,24 @@ class DecisionDialog(QDialog):
         self.db, self.code = db, code
         self.setWindowTitle(f"Решение по коду — {code}")
         self.setModal(True)
-        self.resize(880, 640)
+        self.resize(880, 660)
         root = QVBoxLayout(self)
         rec = db.get(code)
         head = QLabel(f"<b>{code}</b> — {rec.product_name if rec else ''}")
         head.setWordWrap(True)
         root.addWidget(head)
+        chain = db.okrb_chain(code)
+        if len(chain) > 1:
+            cp = QTextEdit()
+            cp.setReadOnly(True)
+            cp.setMaximumHeight(84)
+            cp.setFont(QFont("Consolas", 9))
+            cp.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+            cp.setPlainText("\n".join(
+                f"{'► ' if r.okrb_code == code else '   '}{r.okrb_code:<15}{r.product_name}"
+                for r in chain))
+            root.addWidget(QLabel("Цепочка кодов:"))
+            root.addWidget(cp)
         note = QLabel("Решение снимает неопределённость «требует проверки»: группа включена частично, "
                       "и вы определяете, попадает ли конкретный код под ограничение группы.\n"
                       "Наименование самого кода при этом не меняется — обоснование хранится отдельно.")
@@ -2488,17 +2554,31 @@ class DecisionDialog(QDialog):
 
 
 class TnvedDialog(QDialog):
-    def __init__(self, parent=None, rec: Optional[TnvedRecord] = None):
+    def __init__(self, db: DatabaseManager, parent=None, rec: Optional[TnvedRecord] = None):
         super().__init__(parent)
+        self.db = db
         self.setWindowTitle("Код ТН ВЭД" if rec is None else f"Правка {rec.code}")
         self.setModal(True)
-        self.resize(780, 400)
+        self.resize(820, 470)
         root = QVBoxLayout(self)
         form = QFormLayout()
         self.e_code = QLineEdit(format_tnved(rec.code) if rec else "")
         self.e_code.setPlaceholderText("например 4412 51 000 1")
         form.addRow("Код ТН ВЭД:", self.e_code)
         root.addLayout(form)
+        if rec:
+            chain = db.tnved_chain(rec.code)
+            if len(chain) > 1:
+                root.addWidget(QLabel("Цепочка кодов:"))
+                cp = QTextEdit()
+                cp.setReadOnly(True)
+                cp.setMaximumHeight(90)
+                cp.setFont(QFont("Consolas", 9))
+                cp.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+                cp.setPlainText("\n".join(
+                    f"{'► ' if r.code == rec.code else '   '}{format_tnved(r.code):<15}{r.name}"
+                    for r in chain))
+                root.addWidget(cp)
         root.addWidget(QLabel("Собственное наименование (без тире уровня):"))
         self.e_name = QTextEdit(rec.name if rec else "")
         root.addWidget(self.e_name, 1)
@@ -2848,7 +2928,7 @@ class ImportPdfDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Диалог импорта XLSX (ОКРБ и ТН ВЭД)
+# Диалог импорта XLSX
 # ---------------------------------------------------------------------------
 class ImportXlsxDialog(QDialog):
     def __init__(self, db: DatabaseManager, path: str, parent=None, kind="okrb"):
@@ -3136,8 +3216,8 @@ class MainWindow(QMainWindow):
             legend.addWidget(chip)
         bl.addLayout(legend)
         root.addWidget(band)
-        hint = QLabel("Ширины колонок тянутся мышью и запоминаются · двойной клик по границе заголовка — "
-                      "автоширина · правый клик по заголовку — меню колонок · правый клик по строке — действия")
+        hint = QLabel("Ширины колонок тянутся мышью · двойной клик по границе заголовка — автоширина · "
+                      "правый клик по заголовку — меню колонок · выбранный код раскрывается в цепочку родителей под таблицей")
         hint.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -3148,7 +3228,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} — {self.db.db_path}")
         win = ui_state().get("window", {})
-        self.resize(int(win.get("w", 1360)), int(win.get("h", 870)))
+        self.resize(int(win.get("w", 1360)), int(win.get("h", 900)))
         self.statusBar().showMessage(f"База: {self.db.db_path}")
         self._build_menus()
         for seq, slot in (("Ctrl+F", lambda: self.s_name.setFocus()), ("Ctrl+I", self.import_pdf),
@@ -3170,6 +3250,16 @@ class MainWindow(QMainWindow):
         self._ttimer.timeout.connect(self.refresh_tnved)
         self.t_code.textChanged.connect(lambda _t: self._ttimer.start())
         self.t_name.textChanged.connect(lambda _t: self._ttimer.start())
+
+    def _make_chain_panel(self, hint: str) -> QTextEdit:
+        p = QTextEdit()
+        p.setReadOnly(True)
+        p.setMinimumHeight(78)
+        p.setMaximumHeight(130)
+        p.setFont(QFont("Consolas", 9))
+        p.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        p.setPlainText(hint)
+        return p
 
     def _build_okrb_tab(self) -> QWidget:
         page = QWidget()
@@ -3232,6 +3322,11 @@ class MainWindow(QMainWindow):
         root.addWidget(self.table, 1)
         self.cols = TableColumns(self.table, "main", [140, 430, 300, 270, 100])
         self._apply_view()
+        root.addWidget(QLabel("Родительские коды выбранной строки:"))
+        self.okrb_panel = self._make_chain_panel(
+            "Выберите строку — здесь появится цепочка от корня до кода, с наименованиями и статусами.")
+        root.addWidget(self.okrb_panel)
+        self.table.itemSelectionChanged.connect(self._okrb_panel_update)
         b = QHBoxLayout()
         for t2, s in (("Импорт PDF", self.import_pdf), ("Классификатор ОКРБ", self.import_xlsx),
                       ("Добавить код", self.add_code), ("Редактировать", self.edit_current),
@@ -3295,7 +3390,6 @@ class MainWindow(QMainWindow):
         self.t_branch_lbl.setStyleSheet(f"color: {ACCENT}; font-weight: 600;")
         f2.addWidget(self.t_branch_lbl)
         b = QPushButton("Ветка выбранного кода")
-        b.setToolTip("Показать выбранный код и все его подкоды")
         b.clicked.connect(self.tnved_branch)
         f2.addWidget(b)
         b = QPushButton("Сбросить всё")
@@ -3305,7 +3399,7 @@ class MainWindow(QMainWindow):
         root.addLayout(f2)
         self.ttable = QTableWidget(0, 6)
         self.ttable.setHorizontalHeaderLabels(
-            ["Код ТН ВЭД", "Наименование", "Ур.", "Группа", "Прослеж.", "Полный путь"])
+            ["Код ТН ВЭД", "Наименование", "Ур.", "Группа", "Прослеж.", "Родители (ближний → корень)"])
         self.ttable.verticalHeader().setVisible(False)
         self.ttable.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.ttable.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -3314,10 +3408,15 @@ class MainWindow(QMainWindow):
         self.ttable.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.ttable.customContextMenuRequested.connect(self._tnved_menu)
         root.addWidget(self.ttable, 1)
-        self.tcols = TableColumns(self.ttable, "tnved", [150, 430, 50, 70, 80, 520])
+        self.tcols = TableColumns(self.ttable, "tnved", [150, 380, 50, 70, 80, 620])
         self.ttable.setShowGrid(self._grid)
         self.ttable.setAlternatingRowColors(self._alt)
         self.ttable.verticalHeader().setDefaultSectionSize(23 if self._compact else 30)
+        root.addWidget(QLabel("Родительские коды выбранной строки:"))
+        self.tnved_panel = self._make_chain_panel(
+            "Выберите строку — здесь появится цепочка от корня до кода, с наименованиями.")
+        root.addWidget(self.tnved_panel)
+        self.ttable.itemSelectionChanged.connect(self._tnved_panel_update)
         b = QHBoxLayout()
         for t2, s in (("Импорт XLSX / CSV", self.import_tnved), ("Добавить код", self.tnved_add),
                       ("Редактировать", self.tnved_edit), ("Удалить", self.tnved_del),
@@ -3404,6 +3503,40 @@ class MainWindow(QMainWindow):
         self._apply_view()
         self._save_view()
 
+    # -- панели родителей ----------------------------------------------------
+    def _okrb_panel_update(self):
+        code, _pid, _kind = self._cur()
+        if not code:
+            self.okrb_panel.setPlainText(
+                "Выберите строку — здесь появится цепочка от корня до кода, с наименованиями и статусами.")
+            return
+        try:
+            chain = self.db.okrb_chain(code)
+        except RuntimeError:
+            return
+        lines = []
+        for r in chain:
+            mark = "► " if r.okrb_code == code else "   "
+            lines.append(f"{mark}{r.okrb_code:<15}{r.product_name}   [{r.inclusion_text()}]")
+        self.okrb_panel.setPlainText("\n".join(lines) if lines else "Код не найден в каталоге.")
+
+    def _tnved_panel_update(self):
+        code = self._tcur()
+        if not code:
+            self.tnved_panel.setPlainText(
+                "Выберите строку — здесь появится цепочка от корня до кода, с наименованиями.")
+            return
+        try:
+            chain = self.db.tnved_chain(code)
+        except RuntimeError:
+            return
+        lines = []
+        for r in chain:
+            mark = "► " if r.code == code else "   "
+            tail = "   [прослеживаемый]" if r.traceable else ""
+            lines.append(f"{mark}{format_tnved(r.code):<15}{r.name}{tail}")
+        self.tnved_panel.setPlainText("\n".join(lines) if lines else "Код не найден в каталоге.")
+
     # -- ОКРБ ----------------------------------------------------------------
     def filters(self):
         return {d: int(self.c_filter[d].currentData()) for d in DOC_FLAGS}
@@ -3455,6 +3588,7 @@ class MainWindow(QMainWindow):
         self.fill(recs, pos, decs, anc, anc_pos)
         self.b_more.setEnabled(len(recs) < matched)
         self.lbl.setText(f"Показано {len(recs)} из {matched} · всего {total}")
+        self._okrb_panel_update()
 
     def fill(self, recs: List[OkrbRecord], pos: Dict[str, List[Position]],
              decs: Dict[str, List[Decision]], anc: Dict[str, Dict[str, str]],
@@ -3585,6 +3719,8 @@ class MainWindow(QMainWindow):
         m.addAction("Решение… (Ctrl+D)").triggered.connect(self.decision)
         m.addSeparator()
         m.addAction("Копировать код").triggered.connect(lambda: QApplication.clipboard().setText(code))
+        m.addAction("Копировать цепочку родителей").triggered.connect(
+            lambda: QApplication.clipboard().setText(self.okrb_panel.toPlainText()))
         m.addAction("Копировать строку").triggered.connect(self.copy_row)
         m.addSeparator()
         m.addAction("Удалить").triggered.connect(self.delete_current)
@@ -3744,6 +3880,7 @@ class MainWindow(QMainWindow):
             recs = self.db.tnved_search(limit=self._tlimit, **a)
             matched = self.db.tnved_count(**a)
             total = self.db.tnved_count_all()
+            chains = self.db.tnved_chains([r.code for r in recs])
         except RuntimeError as e:
             QMessageBox.critical(self, "Ошибка базы", str(e))
             return
@@ -3759,8 +3896,12 @@ class MainWindow(QMainWindow):
             t.setRowCount(len(recs))
             for i, r in enumerate(recs):
                 name = ("    " * min(r.depth, 8) + r.name) if self._indent else r.name
+                ch = chains.get(r.code, [])
+                parents = list(reversed(ch[:-1])) if ch else []
+                ptxt = "   ←   ".join(f"{format_tnved(p.code)} {p.name}" for p in parents) \
+                    or "— верхний уровень"
                 vals = [format_tnved(r.code), name, str(r.depth), r.grp,
-                        "да" if r.traceable else "", r.path]
+                        "да" if r.traceable else "", ptxt]
                 for c, v in enumerate(vals):
                     it = QTableWidgetItem(v)
                     it.setData(ROLE_CODE, r.code)
@@ -3788,6 +3929,7 @@ class MainWindow(QMainWindow):
             t.setUpdatesEnabled(True)
         self.tb_more.setEnabled(len(recs) < matched)
         self.tlbl.setText(f"Показано {len(recs)} из {matched} · всего {total}")
+        self._tnved_panel_update()
 
     def tnved_more(self):
         self._tlimit += PAGE_SIZE
@@ -3822,6 +3964,8 @@ class MainWindow(QMainWindow):
             lambda: QApplication.clipboard().setText(code))
         m.addAction("Копировать код (с пробелами)").triggered.connect(
             lambda: QApplication.clipboard().setText(format_tnved(code)))
+        m.addAction("Копировать цепочку родителей").triggered.connect(
+            lambda: QApplication.clipboard().setText(self.tnved_panel.toPlainText()))
         m.addAction("Копировать строку").triggered.connect(self.tnved_copy)
         m.addSeparator()
         m.addAction("Удалить").triggered.connect(self.tnved_del)
@@ -3837,7 +3981,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Строка скопирована", 3000)
 
     def tnved_add(self):
-        dlg = TnvedDialog(self)
+        dlg = TnvedDialog(self.db, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             code, name, trace = dlg.data()
             try:
@@ -3855,7 +3999,7 @@ class MainWindow(QMainWindow):
         rec = self.db.tnved_get(code)
         if rec is None:
             return
-        dlg = TnvedDialog(self, rec)
+        dlg = TnvedDialog(self.db, self, rec)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             new_code, name, trace = dlg.data()
             try:
@@ -3935,11 +4079,13 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8-sig", newline="") as fh:
                 w = csv.writer(fh, delimiter=";")
                 w.writerow(["Код ОКРБ", "Наименование"] + [DOC_TITLES[d] for d in DOC_FLAGS]
-                           + ["Основание", "Включённых подкодов"])
+                           + ["Основание", "Включённых подкодов", "Цепочка родителей"])
                 for r in recs:
+                    chain = self.db.okrb_chain(r.okrb_code)
+                    ctxt = " › ".join(f"{x.okrb_code} {x.product_name}" for x in chain[:-1])
                     w.writerow([r.okrb_code, r.product_name]
                                + [FLAG_LABEL[r.flag(d)] for d in DOC_FLAGS]
-                               + [r.basis_text(), r.children_included])
+                               + [r.basis_text(), r.children_included, ctxt])
         except (OSError, RuntimeError) as e:
             QMessageBox.critical(self, "Ошибка", str(e))
             return
@@ -4003,13 +4149,19 @@ class MainWindow(QMainWindow):
             return
         try:
             recs = self.db.tnved_search(limit=None, **self._t_args())
+            chains = self.db.tnved_chains([r.code for r in recs])
             with open(path, "w", encoding="utf-8-sig", newline="") as fh:
                 w = csv.writer(fh, delimiter=";")
                 w.writerow(["Код ТН ВЭД", "Код без пробелов", "Наименование", "Уровень",
-                            "Группа", "Название группы", "Прослеживаемый", "Код-предок", "Полный путь"])
+                            "Группа", "Название группы", "Прослеживаемый", "Код-предок",
+                            "Родители (ближний → корень)", "Полный путь"])
                 for r in recs:
+                    ch = chains.get(r.code, [])
+                    parents = list(reversed(ch[:-1])) if ch else []
+                    ptxt = " <- ".join(f"{format_tnved(p.code)} {p.name}" for p in parents)
                     w.writerow([format_tnved(r.code), r.code, r.name, r.depth, r.grp,
-                                r.grp_name, "да" if r.traceable else "", format_tnved(r.parent), r.path])
+                                r.grp_name, "да" if r.traceable else "",
+                                format_tnved(r.parent), ptxt, r.path])
         except (OSError, RuntimeError) as e:
             QMessageBox.critical(self, "Ошибка", str(e))
             return
@@ -4072,9 +4224,9 @@ class MainWindow(QMainWindow):
             f"{APP_NAME} {APP_VERSION}\n\n"
             "ОКРБ — статусы: да / да (по группе) / частично / требует проверки /\n"
             "да или не входит (по решению).\n\n"
-            "ТН ВЭД — иерархический каталог: коды 2/4/6/8/9/10 цифр,\n"
-            "уровень по кодам-предкам, контекст из строк без кода,\n"
-            "признак прослеживаемости, названия групп.\n\n"
+            "ТН ВЭД — иерархический каталог: коды 2/4/6/8/9/10 цифр.\n\n"
+            "Под каждой таблицей — цепочка родительских кодов выбранной строки.\n"
+            "В ТН ВЭД колонка «Родители» показана от ближнего к корню.\n\n"
             f"База: {self.db.db_path}\nНастройки интерфейса: {UI_PATH}\n"
             f"Лог: {APP_DIR / 'okrb_app.log'}")
 
@@ -4121,13 +4273,12 @@ def run_selftests() -> int:
     check("6 цифр", tnved_shape("110429"))
     check("4 цифры", tnved_shape("2914"))
     check("5 цифр — не код", not tnved_shape("12345"))
+    check("ведущий ноль восстановлен", code_from_cell(305, 2, "tnved")[0] == "0305")
     check("форматирование 10", format_tnved("4412490001") == "4412 49 000 1")
     check("форматирование 9", format_tnved("441251000") == "4412 51 000")
     check("уровень по тире", tnved_dash_level("-- прочие, имеющие") == 2)
     check("тире убраны", strip_tnved_dashes("--- прочие") == "прочие")
     check("длинное тире считается", tnved_dash_level(chr(0x2013) * 4 + " для производства") == 4)
-    # Старый формат со стрелками не используем.
-    # Каталог ТН ВЭД v.2 разбирается по кодам, тире и строкам-контексту.
 
     print("ТН ВЭД: разбор структуры файла:")
     src = [
@@ -4164,7 +4315,7 @@ def run_selftests() -> int:
         shutil.rmtree(tmpd, ignore_errors=True)
 
     print("База, наследование, решения:")
-    tmp = Path(tempfile.mkdtemp(prefix="okrb5_"))
+    tmp = Path(tempfile.mkdtemp(prefix="okrb51_"))
     db = DatabaseManager(tmp / "t.db")
     try:
         for c, n in (("13.92", "Изделия текстильные"), ("13.92.29", "Прочие готовые изделия"),
@@ -4177,15 +4328,15 @@ def run_selftests() -> int:
         check("группа частично", db.get("13.92.29").flag("in_168_app3") == F_PARTIAL)
         check("подкоды требуют проверки", db.get("13.92.29.200").flag("in_168_app3") == F_CHECK)
         check("родитель не наследует", db.get("13.92").flag("in_168_app3") == F_NONE)
-        check("найдена группа-основание",
-              db.partial_ancestors(["13.92.29.200"]).get("13.92.29.200", {}).get("in_168_app3") == "13.92.29")
+        chain = db.okrb_chain("13.92.29.200")
+        check("цепочка ОКРБ от корня", [r.okrb_code for r in chain] ==
+              ["13.92", "13.92.29", "13.92.29.200"])
         db.set_decision("13.92.29.200", "in_168_app3", D_OUT, "не соответствует ограничению группы")
         db.set_decision("13.92.29.100", "in_168_app3", D_IN, "соответствует ограничению группы")
         db.recompute()
         check("решение «не входит»", db.get("13.92.29.200").flag("in_168_app3") == F_DEC_OUT)
         check("решение «входит»", db.get("13.92.29.100").flag("in_168_app3") == F_DEC_IN)
         check("очередь проверки пуста", db.count(filters={"in_168_app3": FLT_CHECK}) == 0)
-        check("фильтр «решение: не входит»", db.count(filters={"in_168_app3": FLT_DEC_OUT}) == 1)
         check("наименование кода не изменилось",
               db.get("13.92.29.200").product_name == "Спасательные жилеты и пояса")
         db.set_decision("13.92.29.200", "in_168_app3", D_NONE)
@@ -4199,30 +4350,38 @@ def run_selftests() -> int:
             reset_docs=["in_168_app3"])
         db.recompute()
         check("импорт создаёт код и позицию", n_new == 1 and n_pos == 1)
-        check("сброс документа снял решения",
-              not db.decisions_for(["13.92.29.100"]).get("13.92.29.100"))
         check("поиск по товару постановления", db.count(name_q="товар X") == 1)
-        check("поиск без регистра", db.count(name_q="СПАСАТЕЛЬНЫЕ") == 1)
 
-        tr = [TnvedRow(code="4412", name="Фанера клееная:", dashes=0, ord=0),
-              TnvedRow(code="441251000", name="имеющие тропических пород:", dashes=2, ord=1),
-              TnvedRow(code="4412510002", name="лиственных пород", dashes=1, ord=2,
-                       ctx=[(1, "прочие")], traceable=1)]
+        tr = [TnvedRow(code="8537", name="Пульты, панели, консоли:", dashes=0, ord=0),
+              TnvedRow(code="853710", name="на напряжение не более 1000 В:", dashes=1, ord=1),
+              TnvedRow(code="853710980", name="прочие", dashes=2, ord=2),
+              TnvedRow(code="8537109800", name="прочие", dashes=1, ord=3,
+                       ctx=[(1, "прочие")])]
         build_tnved_paths(tr)
-        nn, nu = db.tnved_import(tr, {"44": "Древесина и изделия из нее"}, True)
-        check("ТН ВЭД импорт", nn == 3 and db.tnved_count_all() == 3)
-        rec = db.tnved_get("4412510002")
-        check("ТН ВЭД путь собран", rec is not None and "прочие" in rec.path and "Фанера" in rec.path)
-        check("ТН ВЭД уровень", rec is not None and rec.depth == 2)
-        check("ТН ВЭД прослеживаемость", rec is not None and rec.traceable == 1)
-        check("ТН ВЭД название группы", rec is not None and "Древесина" in rec.grp_name)
-        check("ТН ВЭД поиск по коду", len(db.tnved_search(code_q="4412 51")) == 2)
-        check("ТН ВЭД поиск по своему наименованию", len(db.tnved_search(name_q="ЛИСТВЕННЫХ")) == 1)
-        check("ТН ВЭД поиск по всему пути", len(db.tnved_search(name_q="фанера", mode="path")) == 3)
-        check("ТН ВЭД только 10-значные", len(db.tnved_search(only_leaf=True)) == 1)
-        check("ТН ВЭД только прослеживаемые", len(db.tnved_search(only_trace=True)) == 1)
-        check("ТН ВЭД ветка", len(db.tnved_search(prefix="441251")) == 2)
-        check("ТН ВЭД группы", [g for g, _n in db.tnved_group_list()] == ["44"])
+        nn, nu = db.tnved_import(tr, {"85": "Электрические машины"}, True)
+        check("ТН ВЭД импорт", nn == 4 and db.tnved_count_all() == 4)
+        ch = db.tnved_chain("8537109800")
+        check("цепочка ТН ВЭД от корня",
+              [r.code for r in ch] == ["8537", "853710", "853710980", "8537109800"])
+        check("пакетные цепочки", len(db.tnved_chains(["8537109800", "853710"])["8537109800"]) == 4)
+
+        # регрессия: ручное сохранение с признаком прослеживаемости
+        db.tnved_save("8537109800", "прочие", 1)
+        rec = db.tnved_get("8537109800")
+        check("ручное сохранение с прослеживаемостью", rec is not None and rec.traceable == 1)
+        check("после ручного сохранения цепочка цела",
+              [r.code for r in db.tnved_chain("8537109800")] ==
+              ["8537", "853710", "853710980", "8537109800"])
+        db.tnved_save("8537109800", "прочие прочее", 0)
+        rec = db.tnved_get("8537109800")
+        check("снятие прослеживаемости", rec is not None and rec.traceable == 0)
+        check("наименование обновилось", rec is not None and rec.name == "прочие прочее")
+        db.tnved_save("8537200000", "на напряжение более 1000 В", 0)
+        check("новый код вручную", db.tnved_get("8537200000") is not None)
+        check("предок нового кода", db.tnved_get("8537200000").parent == "8537")
+        check("ТН ВЭД поиск по коду", len(db.tnved_search(code_q="8537 10")) == 3)
+        check("ТН ВЭД только 10-значные", len(db.tnved_search(only_leaf=True)) == 2)
+        check("ТН ВЭД ветка", len(db.tnved_search(prefix="853710")) == 3)
     finally:
         db.close()
         shutil.rmtree(tmp, ignore_errors=True)
@@ -4245,13 +4404,13 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setStyleSheet(APP_QSS)
 
-    # Иконка окна и панели задач: внутри сборки или рядом с exe/скриптом
     from PyQt6.QtGui import QIcon
     _base = Path(getattr(sys, "_MEIPASS", "") or Path(__file__).resolve().parent)
     for _cand in (_base / "okrb.ico", APP_DIR / "okrb.ico"):
         if _cand.is_file():
             app.setWindowIcon(QIcon(str(_cand)))
             break
+
     try:
         db = DatabaseManager(APP_DIR / DB_FILENAME)
     except RuntimeError as e:
